@@ -3,8 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as tf from '@tensorflow/tfjs'
 import * as blazeface from '@tensorflow-models/blazeface'
-// import { Button } from '@/components/ui/button'
-// import { Card } from '@/components/ui/card'
+
 const Button = ({ children, ...props }) => (
   <button {...props} className="p-2 bg-blue-500 text-white rounded">
     {children}
@@ -26,13 +25,24 @@ export default function FaceTrackingApp() {
   const chunksRef = useRef([])
 
   useEffect(() => {
-    const loadModel = async () => {
-      await tf.ready()
-      const loadedModel = await blazeface.load()
-      setModel(loadedModel)
+    const loadModelAndStartVideo = async () => {
+      await tf.ready() // Ensure TensorFlow is ready
+      const loadedModel = await blazeface.load() // Load the model
+      setModel(loadedModel) // Set the model state
+      startVideo() // Start the video stream
     }
-    loadModel()
-    startVideo()
+
+    loadModelAndStartVideo()
+
+    // Cleanup function to stop video stream when component unmounts
+    return () => {
+      if (videoRef.current && videoRef.current.srcObject) {
+        const stream = videoRef.current.srcObject
+        const tracks = stream.getTracks()
+        tracks.forEach((track) => track.stop()) // Stop all media tracks
+        videoRef.current.srcObject = null // Nullify video source
+      }
+    }
   }, [])
 
   const startVideo = () => {
