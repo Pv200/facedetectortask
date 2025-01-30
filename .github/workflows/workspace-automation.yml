@@ -1,4 +1,67 @@
-name: Coder Workspace Automation
+# name: Coder Workspace Automation
+
+# on:
+#   workflow_dispatch:  # Manual trigger
+#   push:
+#     branches:
+#       - main  # Automatic trigger on push to the main branch
+
+# jobs:
+#   create-and-run:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v3
+
+#       - name: Install Coder CLI
+#         run: |
+#           curl -L https://coder.com/install.sh | sh
+#           echo "$HOME/.coder/bin" >> $GITHUB_PATH
+
+#       - name: Authenticate with Coder
+#         env:
+#           CODER_URL: http://194.233.74.174/
+#           CODER_TOKEN: ${{ secrets.CODER_TOKEN }}
+#         run: |
+#           coder login $CODER_URL --token=$CODER_TOKEN
+
+#       - name: Create Coder Workspace
+#         run: |
+#           coder create my-workspace \
+#             --template="devcontainer-docker" \
+#             --parameter repo="https://github.com/microsoft/vscode"
+
+#       - name: Wait for Workspace to Be Ready
+#         run: |
+#           while true; do
+#             status=$(coder show my-workspace --output json | jq -r '.latest_build.status')
+#             if [ "$status" == "success" ]; then
+#               break
+#             fi
+#             echo "Waiting for workspace to be ready..."
+#             sleep 10
+#           done
+
+#       - name: Get Workspace IP
+#         id: workspace-ip
+#         run: |
+#           workspace_ip=$(coder show my-workspace --output json | jq -r '.latest_build.resources[0].agents[0].ip')
+#           echo "Workspace IP: $workspace_ip"
+#           echo "workspace_ip=$workspace_ip" >> $GITHUB_OUTPUT
+
+#       - name: Run Commands in Workspace
+#         run: |
+#           ssh -i ${{ secrets.SSH_KEY_PATH }} root@${{ steps.workspace-ip.outputs.workspace_ip }} "
+#             sudo apt update && sudo apt install python3 python3-venv python3-pip -y &&
+#             python3 -m venv myenv &&
+#             source myenv/bin/activate
+#           "
+
+#       - name: Delete Workspace
+#         if: always()  # Run even if previous steps fail
+#         run: |
+#           coder delete my-workspace --yes
+name: Coder Workspace Automation via API
 
 on:
   workflow_dispatch:  # Manual trigger
@@ -7,57 +70,122 @@ on:
       - main  # Automatic trigger on push to the main branch
 
 jobs:
-  create-and-run:
+  create-and-run-workspace:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install Coder CLI
-        run: |
-          curl -L https://coder.com/install.sh | sh
-          echo "$HOME/.coder/bin" >> $GITHUB_PATH
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'  # Use the Python version you need
 
-      - name: Authenticate with Coder
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Create Workspace via Coder API
         env:
-          CODER_URL: http://194.233.74.174/
-          CODER_TOKEN: ${{ secrets.CODER_TOKEN }}
+          CODER_BASE_URL: http://194.233.74.174
+          CODER_API_KEY: ${{ secrets.CODER_TOKEN }}
+          TEMPLATE_ID: 41d62d47-bae5-4345-9fa0-3d210a036296
+          WORKSPACE_NAME: my-workspace-test-githubaction
+          REPO_URL: https://github.com/microsoft/vscode
+          USER_ID: cc8f08a5-6828-40d5-8c53-3b627af6e1eb
         run: |
-          coder login $CODER_URL --token=$CODER_TOKEN
+          python - <<EOF
+          import requests
+          import json
+          import time
 
-      - name: Create Coder Workspace
-        run: |
-          coder create my-workspace \
-            --template="devcontainer-docker" \
-            --parameter repo="https://github.com/microsoft/vscode"
+          class RichParameter:
+              def __init__(self, name, value):
+                  self.name = name
+                  self.value = value
 
-      - name: Wait for Workspace to Be Ready
-        run: |
-          while true; do
-            status=$(coder show my-workspace --output json | jq -r '.latest_build.status')
-            if [ "$status" == "success" ]; then
-              break
-            fi
-            echo "Waiting for workspace to be ready..."
-            sleep 10
-          done
+          class CreateWorkspaceRequest:
+              def __init__(self, name, template_id, rich_parameter_values=None):
+                  self.name = name
+                  self.template_id = template_id
+                  self.rich_parameter_values = rich_parameter_values or []
 
-      - name: Get Workspace IP
-        id: workspace-ip
-        run: |
-          workspace_ip=$(coder show my-workspace --output json | jq -r '.latest_build.resources[0].agents[0].ip')
-          echo "Workspace IP: $workspace_ip"
-          echo "workspace_ip=$workspace_ip" >> $GITHUB_OUTPUT
+              def to_dict(self):
+                  data = {
+                      "name": self.name,
+                      "template_id": self.template_id,
+                      "rich_parameter_values": [
+                          {"name": param.name, "value": param.value}
+                          for param in self.rich_parameter_values
+                      ]
+                  }
+                  return data
 
-      - name: Run Commands in Workspace
+          base_url = "$CODER_BASE_URL"
+          api_key = "$CODER_API_KEY"
+          user_id = "$USER_ID"
+
+          request = CreateWorkspaceRequest(
+              name="$WORKSPACE_NAME",
+              template_id="$TEMPLATE_ID",
+              rich_parameter_values=[
+                  RichParameter(name="repo", value="$REPO_URL")
+              ]
+          )
+
+          headers = {
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+              "Coder-Session-Token": api_key
+          }
+
+          response = requests.post(
+              f"{base_url}/api/v2/users/{user_id}/workspaces",
+              headers=headers,
+              json=request.to_dict()
+          )
+
+          if response.status_code != 201:
+              raise Exception(f"Failed to create workspace: {response.text}")
+
+          workspace = response.json()
+          print("Workspace created successfully:")
+          print(json.dumps(workspace, indent=2))
+
+          # Wait for workspace to be ready
+          workspace_id = workspace["id"]
+          while True:
+              response = requests.get(
+                  f"{base_url}/api/v2/workspaces/{workspace_id}",
+                  headers=headers
+              )
+              if response.status_code != 200:
+                  raise Exception(f"Failed to fetch workspace status: {response.text}")
+
+              status = response.json()["latest_build"]["status"]
+              if status == "success":
+                  break
+              print(f"Waiting for workspace to be ready... Current status: {status}")
+              time.sleep(10)
+
+          print("Workspace is ready!")
+          EOF
+
+      - name: Execute Commands in Workspace via SSH
+        env:
+          WORKSPACE_IP: 194.233.74.174  # Replace with actual workspace IP
+          SSH_KEY: ${{ secrets.SSH_KEY_PATH }}
+          SSH_USER: root
         run: |
-          ssh -i ${{ secrets.SSH_KEY_PATH }} root@${{ steps.workspace-ip.outputs.workspace_ip }} "
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          ssh-keyscan "$WORKSPACE_IP" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/id_rsa "$SSH_USER@$WORKSPACE_IP" "
             sudo apt update && sudo apt install python3 python3-venv python3-pip -y &&
             python3 -m venv myenv &&
             source myenv/bin/activate
           "
-
-      - name: Delete Workspace
-        if: always()  # Run even if previous steps fail
-        run: |
-          coder delete my-workspace --yes
